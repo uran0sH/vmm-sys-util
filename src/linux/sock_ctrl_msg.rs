@@ -459,7 +459,7 @@ unsafe impl IntoIovec for &[u8] {
 mod tests {
     #![allow(clippy::undocumented_unsafe_blocks)]
     use super::*;
-    use crate::eventfd::EventFd;
+    use std::io::{pipe, Read};
 
     use std::io::Write;
     use std::mem::size_of;
@@ -535,9 +535,9 @@ mod tests {
     fn send_recv_only_fd() {
         let (s1, s2) = UnixDatagram::pair().expect("failed to create socket pair");
 
-        let evt = EventFd::new(0).expect("failed to create eventfd");
+        let evt = pipe().expect("failed to create pipefd");
         let write_count = s1
-            .send_with_fd([].as_ref(), evt.as_raw_fd())
+            .send_with_fd([].as_ref(), evt.1.as_raw_fd())
             .expect("failed to send fd");
 
         assert_eq!(write_count, 0);
@@ -550,7 +550,7 @@ mod tests {
         assert!(file.as_raw_fd() >= 0);
         assert_ne!(file.as_raw_fd(), s1.as_raw_fd());
         assert_ne!(file.as_raw_fd(), s2.as_raw_fd());
-        assert_ne!(file.as_raw_fd(), evt.as_raw_fd());
+        assert_ne!(file.as_raw_fd(), evt.1.as_raw_fd());
 
         file.write_all(unsafe { from_raw_parts(&1203u64 as *const u64 as *const u8, 8) })
             .expect("failed to write to sent fd");
