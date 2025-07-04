@@ -27,7 +27,10 @@ fn new_msghdr(iovecs: &mut [iovec]) -> msghdr {
         msg_name: null_mut(),
         msg_namelen: 0,
         msg_iov: iovecs.as_mut_ptr(),
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         msg_iovlen: iovecs.len(),
+        #[cfg(target_os = "macos")]
+        msg_iovlen: iovecs.len().try_into().unwrap(),
         msg_control: null_mut(),
         msg_controllen: 0,
         msg_flags: 0,
@@ -47,7 +50,14 @@ fn new_msghdr(iovecs: &mut [iovec]) -> msghdr {
 
 #[cfg(not(target_env = "musl"))]
 fn set_msg_controllen(msg: &mut msghdr, cmsg_capacity: usize) {
-    msg.msg_controllen = cmsg_capacity;
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        msg.msg_controllen = cmsg_capacity
+    }
+    #[cfg(target_os = "macos")]
+    {
+        msg.msg_controllen = cmsg_capacity.try_into().unwrap();
+    }
 }
 
 #[cfg(target_env = "musl")]
@@ -113,8 +123,12 @@ fn raw_sendmsg<D: IntoIovec>(fd: RawFd, out_data: &[D], out_fds: &[RawFd]) -> Re
 
     if !out_fds.is_empty() {
         let cmsg = cmsghdr {
-            // SAFETY: We ensure that the input value does not exceed the range of c_uint. c_uint to usize is a safe conversion
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            // SAFETY: We ensure that the input value does not exceed the range of c_uint.
             cmsg_len: unsafe { CMSG_LEN(size_of_val(out_fds).try_into().unwrap()) as usize },
+            #[cfg(target_os = "macos")]
+            // SAFETY: We ensure that the input value does not exceed the range of c_uint.
+            cmsg_len: unsafe { CMSG_LEN(size_of_val(out_fds).try_into().unwrap()) },
             cmsg_level: SOL_SOCKET,
             cmsg_type: SCM_RIGHTS,
             #[cfg(all(target_env = "musl", target_pointer_width = "64"))]
@@ -191,7 +205,7 @@ unsafe fn raw_recvmsg(
         let cmsg = (cmsg_ptr as *mut cmsghdr).read_unaligned();
         if cmsg.cmsg_level == SOL_SOCKET && cmsg.cmsg_type == SCM_RIGHTS {
             let fds_count: usize =
-                ((cmsg.cmsg_len - CMSG_LEN(0) as usize) as usize) / size_of::<RawFd>();
+                ((cmsg.cmsg_len as usize - CMSG_LEN(0) as usize) as usize) / size_of::<RawFd>();
             // The sender can transmit more data than we can buffer. If a message is too long to
             // fit in the supplied buffer, excess bytes may be discarded depending on the type of
             // socket the message is received from.
@@ -202,7 +216,7 @@ unsafe fn raw_recvmsg(
                 // alignment. If these fds can not be stored in `in_fds` buffer, then all the control
                 // data must be dropped to insufficient buffer space for returning them to outer
                 // scope. This might be a sign of incorrect protocol communication.
-                for fd_offset in 0..fds_count {
+                for fd_offset in 0..fds_to_be_copied_count {
                     let raw_fds_ptr: *mut RawFd = CMSG_DATA(cmsg_ptr).cast();
                     // The cmsg_ptr is valid here because is checked at the beginning of the
                     // loop and it is assured to have `fds_count` fds available.
@@ -421,18 +435,30 @@ mod tests {
     #[test]
     fn buffer_len() {
         assert_eq!(unsafe { CMSG_SPACE(0) as usize }, size_of::<cmsghdr>());
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         assert_eq!(
             unsafe { CMSG_SPACE(size_of::<RawFd>() as c_uint) as usize },
             size_of::<cmsghdr>() + size_of::<c_long>()
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            unsafe { CMSG_SPACE(size_of::<RawFd>() as c_uint) as usize },
+            size_of::<cmsghdr>() + size_of::<c_uint>()
         );
         if size_of::<RawFd>() == 4 {
             assert_eq!(
                 unsafe { CMSG_SPACE(2 * size_of::<RawFd>() as c_uint) as usize },
                 size_of::<cmsghdr>() + size_of::<c_long>()
             );
+            #[cfg(any(target_os = "linux", target_os = "android"))]
             assert_eq!(
                 unsafe { CMSG_SPACE(3 * size_of::<RawFd>() as c_uint) as usize },
                 size_of::<cmsghdr>() + size_of::<c_long>() * 2
+            );
+            #[cfg(target_os = "macos")]
+            assert_eq!(
+                unsafe { CMSG_SPACE(3 * size_of::<RawFd>() as c_uint) as usize },
+                size_of::<cmsghdr>() + size_of::<c_uint>() * 3
             );
             assert_eq!(
                 unsafe { CMSG_SPACE(4 * size_of::<RawFd>() as c_uint) as usize },
@@ -481,6 +507,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     fn send_recv_only_fd() {
         let (s1, s2) = UnixDatagram::pair().expect("failed to create socket pair");
 
@@ -587,7 +614,6 @@ mod tests {
     #[test]
     fn send_more_recv_less2() {
         let (s1, s2) = UnixDatagram::pair().expect("failed to create socket pair");
-
         let evt1 = pipe().expect("failed to create pipefd");
         let evt2 = pipe().expect("failed to create pipefd");
         let evt3 = pipe().expect("failed to create pipefd");
