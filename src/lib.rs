@@ -19,6 +19,7 @@ pub use crate::unix::*;
 
 pub mod align;
 pub mod errno;
+pub mod event;
 pub mod fam;
 pub mod metric;
 pub mod rand;
