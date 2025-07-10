@@ -218,7 +218,7 @@ unsafe fn raw_recvmsg(
                 // alignment. If these fds can not be stored in `in_fds` buffer, then all the control
                 // data must be dropped to insufficient buffer space for returning them to outer
                 // scope. This might be a sign of incorrect protocol communication.
-                for fd_offset in 0..fds_count {
+                for fd_offset in 0..fds_to_be_copied_count {
                     let raw_fds_ptr: *mut RawFd = CMSG_DATA(cmsg_ptr).cast();
                     // The cmsg_ptr is valid here because is checked at the beginning of the
                     // loop and it is assured to have `fds_count` fds available.
